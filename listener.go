@@ -20,16 +20,20 @@ import (
 )
 
 func initP2P() (string, *easyp2p.P2PConn, error) {
-	conn := easyp2p.NewP2PConn(strings.Split(*stun, ","))
+	stuns := strings.Split(*stun, ",")
 
-	defer conn.Close()
+	if len(stuns) == 1 && len(stuns[0]) == 0 {
+		stuns = []string{}
+	}
+
+	conn := easyp2p.NewP2PConn(stuns)
 
 	if _, err := conn.Listen(0); err != nil {
 		return "", nil, errors.Wrap(err, "listen error")
 	}
 
 	if _, err := conn.DiscoverIP(); err != nil {
-		return "", nil, errors.Wrap(err, "Discovering IP addresses error")
+		return "", nil, errors.Wrap(err, "discovering IP addresses error")
 	}
 
 	localDescription, err := conn.LocalDescription()
@@ -67,142 +71,183 @@ func listen(ctx context.Context, client api.ListenerClient, grpcConn *grpc.Clien
 
 	if err != nil {
 		return errors.Wrap(err, "listen error")
-	} else {
-		for {
-			res, err := listenClient.Recv()
+	}
 
-			if err != nil {
-				return errors.Wrap(err, "listen recv error")
+	for {
+		res, err := listenClient.Recv()
+
+		if err != nil {
+			break
+		}
+
+		log.Println("listened:", res)
+
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+
+			commCtx := ctx
+			var cancel func()
+			if t, err := time.Parse(time.RFC3339, res.Timelimit); err == nil {
+				commCtx, cancel = context.WithDeadline(commCtx, t)
+
+				defer cancel()
 			}
 
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
+			comm, err := client.Communicate(ctx)
 
-				commCtx := ctx
-				var cancel func()
-				if t, err := time.Parse(time.RFC3339, res.Timelimit); err == nil {
-					commCtx, cancel = context.WithDeadline(commCtx, t)
+			if err != nil {
+				return
+			}
 
-					defer cancel()
+			defer comm.CloseSend()
+
+			if err := comm.Send(&api.CommunicateParameters{
+				Param: &api.CommunicateParameters_Identifier{
+					Identifier: res.Identifier,
+				},
+			}); err != nil {
+				return
+			}
+
+			res, err := comm.Recv()
+
+			if err != nil {
+				return
+			}
+
+			remoteDescription := res.Message
+
+			res, err = comm.Recv()
+
+			if err != nil {
+				return
+			}
+
+			if *password != res.Message {
+				return
+			}
+
+			log.Println("initializing p2p connection")
+
+			localDescription, conn, err := initP2P()
+
+			if err != nil {
+				return
+			}
+
+			if err := comm.Send(&api.CommunicateParameters{
+				Param: &api.CommunicateParameters_Message{
+					Message: localDescription,
+				},
+			}); err != nil {
+				return
+			}
+
+			comm.CloseSend()
+
+			if err := conn.Connect(ctx, remoteDescription); err != nil {
+				return
+			}
+			defer conn.Close()
+
+			log.Printf("p2p connection established: %s<->%s", conn.RemoteAddr(), conn.LocalAddr())
+
+			defaultConfig := smux.DefaultConfig()
+			defaultConfig.KeepAliveInterval = 5 * time.Second
+			defaultConfig.KeepAliveTimeout = 15 * time.Second
+
+			session, err := smux.Server(conn, defaultConfig)
+
+			if err != nil {
+				return
+			}
+			defer session.Close()
+
+			var targets []Forward
+			if stream, err := session.AcceptStream(); err != nil {
+				return
+			} else {
+				if err := json.NewDecoder(stream).Decode(&targets); err != nil {
+					stream.Close()
+
+					return
 				}
+				stream.Close()
+			}
 
-				comm, err := client.Communicate(ctx)
+			var wg sync.WaitGroup
+			defer wg.Wait()
+
+			for {
+				stream, err := session.AcceptStream()
 
 				if err != nil {
 					return
 				}
 
-				defer comm.CloseSend()
+				log.Printf("new stream accepted (remote addr: %s, id: %d)", conn.RemoteAddr(), stream.ID())
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					defer stream.Close()
 
-				res, err := comm.Recv()
+					var mut sync.Mutex
+					var err error
 
-				if err != nil {
-					return
-				}
-
-				remoteDescription := res.Message
-
-				res, err = comm.Recv()
-
-				if err != nil {
-					return
-				}
-
-				if *password != res.Message {
-					return
-				}
-
-				localDescription, conn, err := initP2P()
-
-				if err != nil {
-					return
-				}
-
-				if err := comm.Send(&api.CommunicateParameters{
-					Param: &api.CommunicateParameters_Message{
-						Message: localDescription,
-					},
-				}); err != nil {
-					return
-				}
-
-				comm.CloseSend()
-
-				if err := conn.Connect(ctx, remoteDescription); err != nil {
-					return
-				}
-				defer conn.Close()
-
-				defaultConfig := smux.DefaultConfig()
-				defaultConfig.KeepAliveInterval = 5 * time.Second
-				defaultConfig.KeepAliveTimeout = 15 * time.Second
-
-				session, err := smux.Server(conn, defaultConfig)
-
-				if err != nil {
-					return
-				}
-				defer session.Close()
-
-				var targets []Forward
-				if stream, err := session.AcceptStream(); err != nil {
-					return
-				} else {
-					if err := json.NewDecoder(stream).Decode(&targets); err != nil {
-						stream.Close()
+					var idx int32
+					if e := binary.Read(stream, binary.BigEndian, &idx); e != nil {
+						err = errors.Wrap(err, "reading target id error")
 
 						return
 					}
-					stream.Close()
-				}
 
-				var wg sync.WaitGroup
-				defer wg.Wait()
+					if idx < 0 || idx >= int32(len(targets)) {
+						err = errors.New("invalid id: " + strconv.Itoa(int(idx)))
 
-				for {
-					stream, err := session.AcceptStream()
+						return
+					}
+
+					dest := targets[idx].To + ":" + strconv.Itoa(targets[idx].ToPort)
+
+					c, err := net.Dial("tcp", dest)
 
 					if err != nil {
+						err = errors.Wrap(err, "dialing target error")
+
 						return
 					}
 
-					wg.Add(1)
-					go func() {
+					defer c.Close()
+
+					la, ra := c.LocalAddr().String(), c.RemoteAddr().String()
+
+					log.Printf("new proxy connection established (id: %d, remote addr: %s, %s<->%s)", stream.ID(), conn.RemoteAddr(), la, ra)
+
+					var wg sync.WaitGroup
+
+					fn := func(a, b net.Conn) {
 						defer wg.Done()
-						defer stream.Close()
 
-						var idx int32
-						if binary.Read(stream, binary.BigEndian, &idx) != nil {
-							return
+						if _, e := io.Copy(a, b); e != nil {
+							mut.Lock()
+							err = e
+							mut.Unlock()
 						}
 
-						if idx < 0 || idx >= int32(len(targets)) {
-							return
-						}
+						a.Close()
+						b.Close()
+					}
 
-						c, err := net.Dial("tcp", targets[idx].To+":"+strconv.Itoa(targets[idx].ToPort))
+					wg.Add(2)
+					go fn(stream, c)
+					go fn(c, stream)
+					wg.Wait()
 
-						if err != nil {
-							return
-						}
-
-						fn := func(a, b net.Conn) {
-							defer wg.Done()
-
-							io.Copy(a, b)
-
-							a.Close()
-							b.Close()
-						}
-
-						wg.Add(2)
-						go fn(stream, c)
-						go fn(c, stream)
-					}()
-				}
-			}()
-		}
+					log.Printf("proxy connection cllosed (id: %d, remote addr: %s, %s<->%s)", stream.ID(), conn.RemoteAddr(), la, ra)
+				}()
+			}
+		}()
 	}
 
 	return nil

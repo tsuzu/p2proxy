@@ -2,8 +2,11 @@ package main
 
 import (
 	"context"
+	"crypto/x509"
 	"flag"
 	"log"
+
+	"google.golang.org/grpc/credentials"
 
 	"github.com/cs3238-tsuzu/sigserver/api"
 
@@ -11,23 +14,59 @@ import (
 )
 
 var (
-	insecure  = flag.Bool("insecure", false, "allow a insecure connection")
-	listener  = flag.Bool("listener", false, "listener or connector")
-	signaling = flag.String("signaling", "", "signaling server")
-	key       = flag.String("key,k", "", "key")
-	password  = flag.String("pass,p", "", "password")
-	token     = flag.String("token", "", "if empty, try to register.(only needed for listener mode)")
-	stun      = flag.String("stun", "stun.l.google.com:19302", "STUN server(split with comma/don't include spaces)")
-	target    = flag.String("target,t", "", "for connector. local_port:remote_addr:remote_port(split with comma to use multi ports)")
-	public    = flag.Bool("public,p", false, "for connector. whether accepts connections from other computers")
+	insecure   = flag.Bool("insecure", false, "allow an insecure connection")
+	systemCert = flag.Bool("system-cert", false, "use system certificates")
+	serverCert = flag.String("server-cert", "", "server certificate")
+	clientKey  = flag.String("client-key", "", "client key")
+	clientCert = flag.String("client-cert", "", "client certificate")
+	listener   = flag.Bool("listener", false, "listener or connector")
+	signaling  = flag.String("signaling", "", "signaling server")
+	key        = flag.String("key", "", "key")
+	password   = flag.String("pass", "", "password")
+	token      = flag.String("token", "", "if empty, try to register.(for listener)")
+	stun       = flag.String("stun", "stun.l.google.com:19302", "STUN server(split with comma/don't include spaces)")
+	target     = flag.String("target", "", "local_port:remote_addr:remote_port(split with comma to use multi ports, for connector)")
+	public     = flag.Bool("public", false, "whether accepts connections from other computers(for connector)")
+	help       = flag.Bool("help", false, "show this")
 )
 
 func main() {
 	flag.Parse()
 
+	if *help {
+		flag.Usage()
+
+		return
+	}
+
 	ctx := context.Background()
 
 	dialOpts := []grpc.DialOption{}
+
+	if *systemCert {
+		pool, err := x509.SystemCertPool()
+
+		if err != nil {
+			log.Fatal("system cert pool error:", err)
+		}
+		cred := credentials.NewClientTLSFromCert(pool, "")
+
+		dialOpts = append(dialOpts, grpc.WithTransportCredentials(cred))
+	}
+
+	if serverCert := *serverCert; serverCert != "" {
+		cred, err := credentials.NewClientTLSFromFile(serverCert, "")
+
+		if err != nil {
+			log.Fatal("server certificate loading error:", err)
+		}
+
+		dialOpts = append(dialOpts, grpc.WithTransportCredentials(cred))
+	}
+
+	if clientCert := *clientCert; clientCert != "" {
+		// TODO:		credentials.NewServerTLSFromFile(certFile string, keyFile string)
+	}
 
 	if *insecure {
 		dialOpts = append(dialOpts, grpc.WithInsecure())
@@ -54,5 +93,4 @@ func main() {
 			log.Fatal("connect error: ", err)
 		}
 	}
-
 }

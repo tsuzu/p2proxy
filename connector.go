@@ -12,7 +12,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/cs3238-tsuzu/go-easyp2p"
 	"github.com/cs3238-tsuzu/sigserver/api"
 	"github.com/pkg/errors"
 	"github.com/xtaci/smux"
@@ -31,7 +30,7 @@ func connect(ctx context.Context, client api.ListenerClient, grpcConn *grpc.Clie
 		if err != nil {
 			return errors.Wrap(err, "illegal target format")
 		}
-		to, err := strconv.ParseInt(s[0], 10, 32)
+		to, err := strconv.ParseInt(s[2], 10, 32)
 		if err != nil {
 			return errors.Wrap(err, "illegal target format")
 		}
@@ -46,23 +45,13 @@ func connect(ctx context.Context, client api.ListenerClient, grpcConn *grpc.Clie
 		)
 	}
 
-	conn := easyp2p.NewP2PConn(strings.Split(*stun, ","))
-
-	defer conn.Close()
-
-	if _, err := conn.Listen(0); err != nil {
-		return errors.Wrap(err, "listen error")
-	}
-
-	if _, err := conn.DiscoverIP(); err != nil {
-		return errors.Wrap(err, "Discovering IP addresses error")
-	}
-
-	localDescription, err := conn.LocalDescription()
+	localDescription, conn, err := initP2P()
 
 	if err != nil {
-		return errors.Wrap(err, "local description generation error")
+		return errors.Wrap(err, "p2p initialization error")
 	}
+
+	log.Println("local description", localDescription)
 
 	connectResult, err := client.Connect(
 		ctx,
@@ -163,6 +152,27 @@ func connect(ctx context.Context, client api.ListenerClient, grpcConn *grpc.Clie
 		fromBase = "0.0.0.0:"
 	}
 
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			timer := time.NewTimer(3 * time.Second)
+
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return
+			case <-timer.C:
+			}
+			timer.Stop()
+
+			if session.IsClosed() {
+				cancel()
+				return
+			}
+		}
+	}()
+
 	for i := range targets {
 		wg.Add(1)
 		go func(idx int, f *Forward) {
@@ -176,7 +186,7 @@ func connect(ctx context.Context, client api.ListenerClient, grpcConn *grpc.Clie
 			listener, err := net.Listen("tcp", addr)
 
 			if err != nil {
-				log.Printf("%s: listen error", addr)
+				log.Printf("listen error: %s, %v", addr, err)
 
 				return
 			}
@@ -193,51 +203,55 @@ func connect(ctx context.Context, client api.ListenerClient, grpcConn *grpc.Clie
 				accepted, err := listener.Accept()
 
 				if err != nil {
-					log.Printf("%s: closed", addr)
-
 					return
 				}
-
-				accepted.Close()
 
 				wg.Add(1)
 				go func() {
 					defer accepted.Close()
 					defer wg.Done()
 
-					defer log.Printf("%s<->%s: closed", accepted.RemoteAddr().String())
+					var mut sync.Mutex
+					var err error
 
-					var wg sync.WaitGroup
-
-					defer wg.Wait()
+					defer func() {
+						log.Printf("%s<->%s: closed(error: %v)", addr, accepted.RemoteAddr().String(), err)
+					}()
 
 					stream, err := session.OpenStream()
 
 					if err != nil {
-						log.Printf("%s<->%s: %v", err)
+						err = errors.Wrap(err, "open stream error")
 
 						return
 					}
 
 					defer stream.Close()
 
-					if err := binary.Write(stream, binary.BigEndian, int32(idx)); err != nil { // 4 bytes
-						log.Printf("%s<->%s: %v", err)
+					if e := binary.Write(stream, binary.BigEndian, int32(idx)); e != nil { // 4 bytes
+						err = errors.Wrap(e, "writing id error")
 
 						return
 					}
+
+					var wg sync.WaitGroup
 					fn := func(a, b net.Conn) {
 						defer wg.Done()
 
-						io.Copy(a, b)
+						if _, e := io.Copy(a, b); e != nil {
+							mut.Lock()
+							err = e
+							mut.Unlock()
+						}
 
 						a.Close()
 						b.Close()
 					}
 
 					wg.Add(2)
-					go fn(stream, conn)
-					go fn(conn, stream)
+					go fn(stream, accepted)
+					go fn(accepted, stream)
+					wg.Wait()
 				}()
 			}
 		}(i, &targets[i])
