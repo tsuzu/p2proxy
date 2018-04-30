@@ -23,25 +23,42 @@ func connect(ctx context.Context, client api.ListenerClient, grpcConn *grpc.Clie
 	for _, v := range strings.Split(*target, ",") {
 		s := strings.Split(v, ":")
 
-		if len(s) != 3 {
+		var f Forward
+		switch len(s) {
+		case 2:
+			from, err := strconv.ParseInt(s[0], 10, 32)
+			if err != nil {
+				return errors.Wrap(err, "illegal target format")
+			}
+			to, err := strconv.ParseInt(s[1], 10, 32)
+			if err != nil {
+				return errors.Wrap(err, "illegal target format")
+			}
+
+			f.From = int(from)
+			f.ToPort = int(to)
+			f.To = "127.0.0.1"
+		case 3:
+			from, err := strconv.ParseInt(s[0], 10, 32)
+			if err != nil {
+				return errors.Wrap(err, "illegal target format")
+			}
+			to, err := strconv.ParseInt(s[2], 10, 32)
+			if err != nil {
+				return errors.Wrap(err, "illegal target format")
+			}
+
+			f.From = int(from)
+			f.ToPort = int(to)
+
+			f.To = s[1]
+		default:
 			return errors.New("illegal target format")
-		}
-		from, err := strconv.ParseInt(s[0], 10, 32)
-		if err != nil {
-			return errors.Wrap(err, "illegal target format")
-		}
-		to, err := strconv.ParseInt(s[2], 10, 32)
-		if err != nil {
-			return errors.Wrap(err, "illegal target format")
 		}
 
 		targets = append(
 			targets,
-			Forward{
-				From:   int(from),
-				To:     s[1],
-				ToPort: int(to),
-			},
+			f,
 		)
 	}
 

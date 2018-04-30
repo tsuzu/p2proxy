@@ -5,6 +5,9 @@ import (
 	"crypto/x509"
 	"flag"
 	"log"
+	"time"
+
+	"google.golang.org/grpc/keepalive"
 
 	"google.golang.org/grpc/credentials"
 
@@ -25,7 +28,7 @@ var (
 	password   = flag.String("pass", "", "password")
 	token      = flag.String("token", "", "if empty, try to register.(for listener)")
 	stun       = flag.String("stun", "stun.l.google.com:19302", "STUN server(split with comma/don't include spaces)")
-	target     = flag.String("target", "", "local_port:remote_addr:remote_port(split with comma to use multi ports, for connector)")
+	target     = flag.String("target", "", "local_port:[remote_addr:]remote_port(split with comma to use multi ports, for connector)")
 	public     = flag.Bool("public", false, "whether accepts connections from other computers(for connector)")
 	help       = flag.Bool("help", false, "show this")
 )
@@ -71,6 +74,11 @@ func main() {
 	if *insecure {
 		dialOpts = append(dialOpts, grpc.WithInsecure())
 	}
+
+	dialOpts = append(dialOpts, grpc.WithKeepaliveParams(keepalive.ClientParameters{
+		Time:                1 * time.Minute,
+		PermitWithoutStream: true,
+	}))
 
 	conn, err := grpc.DialContext(ctx, *signaling, dialOpts...)
 
