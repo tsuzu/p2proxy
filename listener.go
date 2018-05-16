@@ -77,6 +77,8 @@ func listen(ctx context.Context, client api.ListenerClient, grpcConn *grpc.Clien
 		res, err := listenClient.Recv()
 
 		if err != nil {
+			log.Println("listenClient recv error:", err)
+
 			break
 		}
 
@@ -94,7 +96,7 @@ func listen(ctx context.Context, client api.ListenerClient, grpcConn *grpc.Clien
 				defer cancel()
 			}
 
-			comm, err := client.Communicate(ctx)
+			comm, err := client.Communicate(commCtx)
 
 			if err != nil {
 				return
