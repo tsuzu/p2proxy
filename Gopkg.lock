@@ -35,7 +35,7 @@
   branch = "master"
   name = "github.com/cs3238-tsuzu/sigserver"
   packages = ["api"]
-  revision = "2de9f4456afe32e3693072c264a8adf8585d49e3"
+  revision = "f2abcf4c8eafcbb06b291a4c8840b7bd9d0f3808"
 
 [[projects]]
   name = "github.com/golang/protobuf"

@@ -92,6 +92,26 @@ func main() {
 
 	client := api.NewListenerClient(conn)
 
+	go func() {
+		ticker := time.NewTicker(15 * time.Second)
+
+		for {
+			select {
+			case <-ticker.C:
+			case <-ctx.Done():
+				return
+			}
+
+			_, err := client.Ping(ctx, &api.PingData{Text: "ping"})
+
+			if err != nil {
+				log.Println("ping error!:", err)
+
+				return
+			}
+		}
+	}()
+
 	if *listener {
 		if err := listen(ctx, client, conn); err != nil {
 			log.Fatal("listen error: ", err)
