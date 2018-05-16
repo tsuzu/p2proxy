@@ -105,8 +105,6 @@ func main() {
 			_, err := client.Ping(ctx, &api.PingData{Text: "ping"})
 
 			if err != nil {
-				log.Println("ping error!:", err)
-
 				return
 			}
 		}
