@@ -15,7 +15,7 @@ $ p2proxy -insecure -signaling XXXX.com:8000 -target 2022:22,2080:80 -key hoge -
 
 - listener
 ```
-$ p2proxy -insecure -signaling XXXX.com:8000 -key hoge -pass foobar
+$ p2proxy -insecure -signaling XXXX.com:8000 -key hoge -pass foobar -listener
 ```
 
 ### Details
